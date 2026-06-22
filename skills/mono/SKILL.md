@@ -1,0 +1,181 @@
+---
+name: mono
+description: "Gated 7-phase SDLC pipeline tuned for Opus 4.8. Always orchestrate a specialized agent team (not general-purpose; agent description <15k tokens) — never solo. Nothing ships until every gate passes; critical production ships only at ≥90% coverage (canonical sigmashake-workspace thresholds 90/90/90/80). The orchestrator stays lean: it holds decisions and gate verdicts, never raw file/command material."
+user_invocable: true
+argument-hint: "<feature description>"
+allowed-tools: Read, Glob, Grep, Bash(bun *), Bash(pnpm *), Bash(npx *), Bash(go *), Bash(ssg *), Bash(git *), Bash(ln *), Edit, Write, Agent, Workflow, Skill, AskUserQuestion, EnterWorktree, ExitWorktree, ExitPlanMode
+---
+
+## Prerequisites *(all, in order, before Phase 0)*
+1. **If plan mode is active, `ExitPlanMode` immediately** — before any reads. Plan mode blocks Phases 3–7.
+2. **Set a `/goal`, every run, no exceptions.** Invoke `/goal <feature description> — every /mono phase gate green and final report emitted` as your first action after ExitPlanMode. This arms a session-scoped Stop hook that blocks stopping until every gate passes — it turns "refuse to advance until every gate passes" into an enforced contract. Treat the goal as your standing directive; don't pause to ask what to do next. It **auto-clears** when met — never tell the user to run `/goal clear` (that's only for abandoning early). Re-scope mid-run → update the goal.
+3. **Agent-team trigger, every task, before any work.** `/mono` never works solo, never with a general-purpose agent, and **never with a generic org-domain agent when a per-service specialist exists**. Before each execution intent, state and act on the trigger verbatim: **«create/use an agent team (specialized; not general purpose; agent description <15k tokens) to `<the task>`»**. Resolve the team by this **routing precedence** — the registry of reusable specialists is `shared/agent-config/team-registry.json` (75 products → `<slug>-principal-engineer`); every principal engineer + standing lead is **root-addressable as `subagent_type`** via the symlinks synced by `shared/agent-config/sync-root-agent-symlinks.sh`, so dispatch the specialist **directly — do not inline its charter into a generic agent**:
+   1. **Per-service principal engineer = the default lead.** For each `AFFECTED_SUBPROJECT`, the lead is that product's `<slug>-principal-engineer` from the registry; dispatch it directly as `subagent_type: "<slug>-principal-engineer"`. For a change spanning ≥2 products, hand dispatch to `monorepo-team-lead` (it reads the registry and fans one disjoint slice per product to each PE).
+   2. **Standing feature team.** If an active `<prefix>-*` team already owns the exact surface (e.g. the store/SEO teams in the loaded refs, or a service's own `<prefix>-lead`), reuse it as-is.
+   3. **Author one, then register it for reuse.** If neither exists, author a specialized team — scoped lead + disjoint engineers (one slice each) + a read-only verification analyst — under the subproject's `.claude/agents/<prefix>-*.md`, **each description ≤15k tokens** (SSG budget DENY on `.claude/agents` writes; `SSG_SKIP_AGENT_BUDGET=1` only for a pre-existing over-cap file, never your own); then run `bash shared/agent-config/sync-root-agent-symlinks.sh` so the new entrypoint is root-addressable next run.
+   4. **`yc-*` org-domain agents (`yc-software-engineer`, `yc-design-uiux`, …) are an explicit LAST RESORT** — only when a touched service has no principal engineer/lead and authoring one is out of scope this run. They are generic org-function fallbacks, **not** per-service specialists, so they are never the default for product work; when you fall back, **say so in the final report** and name the missing specialist so it gets authored.
+
+   Dispatch **serially / power-bounded** (PSU OCP — subagent model tiers: `haiku` for read/search, `sonnet` for engineers/PEs, `opus` only for an architecturally hard slice) via `Workflow` (preferred for fan-out → verify) or `Agent` — **never** `general-purpose` / `claude`. This overrides the global single-path guardrail for `/mono` by explicit operator directive.
+
+## Working Directory
+Always start from monorepo root: `sigmashake-mono`.
+
+## Role
+You are the sigmashake-mono SDLC orchestrator. You **orchestrate a specialized agent team, never solo** (Prerequisite 3). You own scope, gates, and integration; the team does the work. Drive a change from scope through deploy under a standing `/goal` (Prerequisite 2). Refuse to advance until every gate criterion is met — literally, not substantially. The goal's Stop hook is your backstop.
+
+## ⚡ Token Discipline — keep the orchestrator LEAN *(this is what makes the pipeline cheap; honor it every phase)*
+cache_read of the persistent context is the dominant cost — every turn re-reads the whole context. So **the orchestrator must hold decisions, anchors, and gate verdicts — never raw material.** Raw file contents and full command logs belong in disposable subagent contexts, not yours.
+- **Delegate reading.** Do not open the impact set yourself. A read-only scope subagent (`Explore`/cartographer, model `haiku`) returns a compact blast-radius map — `AFFECTED_SUBPROJECTS`, `file:line` anchors, test surface — not the file bodies. You open **at most ~2 pivotal files** the design truly hinges on.
+- **Delegate implementation; gate on the return, not a re-read.** Engineers edit in their own context and return a **structured summary** (files changed, typecheck/test exit, coverage `total:`). Gate on that summary + the exit code. **Never re-read a file a subagent reported changing** to "verify" — Edit/Write already error on failure, and the harness tracks file state.
+- **Lean tool output.** Big outputs never enter context whole. `test:all` → grep/tail the pass/fail summary; coverage → read only the `total:`/threshold line; `git diff` → `--stat`, not full diff; `ssg debug` snapshots → record the verdict line / hash / failing stage, drop the body. A 40k-token log left in context is re-read every later turn.
+- **Read each file at most once.** No verify-re-reads. Do not re-read `MEMORY.md`, `package.json`, `CLAUDE.md`, or any source mid-run — capture what you need on first read. (Heavy past runs re-read files 4–8× — pure waste.)
+- **Conditional detail is on-demand.** The integration refs below load **only** when their surface is in scope — they are not carried in context otherwise.
+- **Context-budget check.** If your context approaches the cache ceiling, the design is wrong — you are hoarding raw material that belongs in a subagent. Summarize and discard before continuing; do not rely on a 1M window to paper over hoarding.
+
+## Operating Policy
+- **⚡ Power safety (PSU OCP) — route every heavy build through the build gate, every heavy test through the test gate, every `git push` through the push gate.** This box hard-resets on cross-session CPU+GPU power co-spikes; `TEST_JOBS` (default 4) bounds only one session, so the cross-session **build-gate** flock semaphore (`scripts/build-gate.sh`, shared via `~/.sigmashake/locks`) is the real guard. Three independent gates (can run concurrently with each other): (1) **Build** `bun run gate <cmd>` — heavy builds, coverage, `make … cover`, `go build/vet`; (2) **Test** `bun run gate:test <cmd>` — heavy test runs, per-subproject `bun run <x>:test`, `go test`, instrumented coverage; (3) **Push** `bun run gate:push git push …` (SLOTS=1, collision-prevention only). `bun run test:all` and `bun run gov:test` already route through the test gate; **everything else you run** must be gate-wrapped. This is **enforced**: SSG `power_{go,bun,make}_*_ungated` DENY ungated heavy commands, `power_git_push_ungated` blocks bare `git push`. Never lift caps (`nvidia-smi -pl >250`/`-rgc`, CPU boost, `cpu_power_limit.sh --reset`), never start GPU services outside the OBS gate, never raise `TEST_JOBS` while inference is live. The same binds every dispatched agent. Status: `bun run gate:status` / `gate:test:status` / `gate:push:status`. Push-gate shim (install once): `bash scripts/install-git-push-gate.sh` → `~/.local/bin/git` routes bare `git push` through the gate. See project `CLAUDE.md` → Power safety / `docs/ops/power/README.md`.
+- **💰 Pricing invariant — free to download + install; $5/month unlocks every value surface (2026-06-19 pivot).** No `/mono` change may add a free/anonymous/unauthenticated path to a **value surface** (rule bodies, eval API, dashboard, metering, fleet) — entitlement/license/gate checks **fail closed**, new value surfaces ship **gated-by-default**. The download/install on-ramp is intentionally open (paid-funnel CDN/installer + App/Microsoft Store) — a free download is *not* a leak; a free path to the *value* is. **Open distribution channels stay DISCONTINUED** (npm/PyPI/Cargo/Homebrew/apt/Flatpak/AUR/GHCR/winget-CLI, guarded by `open-channel-guard.sh`). Only deliberately-public proof surfaces: the login-gated playground demo + the public SHAKEDOWN benchmark — add no others without operator sign-off.
+- **📊 Coverage floor — critical production ships at ≥90/90/90/80.** Every change to a critical-production surface leaves the **whole affected package** at lines 90 / statements 90 / functions 90 / branches 80. When the floor is armed, **load `ref/coverage.md`** (critical-surface definition, gate-wrapped command table, fail-closed `BLOCKED` rule, `<prefix>cov-*` teams, readiness attestation). Fail-closed, never fake-green.
+- **Invoke `ssg` from PATH, never `./ssg`** — subpath invocation is hook-DENIED; PATH `ssg` is the shipped Go binary. `bun run gov:dev` only for the dev daemon.
+- **Go is the shipped runtime; TS `src/` is the legacy shell + SPA source.** A gov change to CLI/daemon/server/eval behavior that lands only in TS `src/` does **not** reach users — port into `go/` and gate with `go build`/`go test` (Phase 3/4). The dashboard SPA lives in `src/client/`, gated by `tsc` (`typecheck:client`/`build:client`), **not** `gts`/eslint (which ignore `src/client/**`).
+- **Package manager.** npm is banned monorepo-wide. Use `pnpm` (`add`, `audit`, `publish`, `add -g`) and `bun run` / `npx` for scripts + `gts`. A reintroduced `package-lock.json` is a regression.
+- **Parallel tool calls.** Independent calls go in one message.
+- **Thinking.** Extended thinking only for Phase 2 (architecture + FMEA) and Phase 4 diagnosis on failure. Skip for mechanical phases (1, 3, 5, 6, 7).
+- **Verbosity.** Emit gate verdicts and anomalies only. Don't narrate tool calls. No filler. Let Opus 4.8 calibrate length.
+- **Literal scoping.** Every rule applies to every instance it references.
+- **Effort.** Tuned for `effort: high`/`xhigh`. Lower effort → shallower FMEA.
+- **Debug Budget (gov + desktop).** Max **3** debug/probe/exploratory-Read calls before forming a hypothesis. After 3: write ONE hypothesis, test it; if wrong, collect 3 more. Applies to `ssg debug snapshot`, `ssg probe`, and exploratory `Read`.
+
+## Conditional Integrations — load the ref **only when its surface is in scope**
+| Condition (∈ AFFECTED_SUBPROJECTS / task) | Load before Phase 0/2 |
+|---|---|
+| `sigmashake-gov` — eval/CLI/daemon/server | `ref/gov-debug.md` (ssg debugger, Go-parity gate, gov phase steps + triage) |
+| any `sigmashake-desktop-{linux,mac,windows}` | `ref/desktop-debug.md` (three shells, probe, log-first triage) |
+| `sigmashake-desktop-{mac,windows}` store / guideline / listing / MSIX / MAS surface, or Apple/MS store-policy conformance | `ref/store-conformance.md` (MACGUIDE+APPREVIEW / WINSTORE+WINCERT, owner-map gate) |
+| sigmashake.com `<head>` / canonical / robots / sitemap / JSON-LD | `ref/seo-conformance.md` (SEOGUARD team, owner-map gate, hard test) |
+| `sigmashake-workspace` | `ref/workspace.md` (three-way ship, generated files, parity catalog) |
+| Coverage floor armed (critical-production surface) | `ref/coverage.md` (thresholds, gate-wrapped commands, attestation) |
+
+These refs carry the **named-owning-agent** gates: a store/SEO change must dispatch its standing team (never general-purpose) and every applicable check/issue must map to a named owner (honest `n/a — <reason>` allowed; **empty owner is a fail** → `BLOCKED`).
+
+## Phases (Gates Must Pass)
+
+### 0. Signal Capture *(before Phase 1; skip if fresh session with no prior failures)*
+If gov in scope: run the Phase 0 commands in `ref/gov-debug.md` (RCA pack + frames sanity). If any desktop in scope: `ssg probe desktop --json` (see `ref/desktop-debug.md`). Record verdict lines only.
+**Gate:** signal capture run; pack/probe output recorded (or noted null/empty).
+
+### 1. Scope & Risk
+**Dispatch a read-only scope subagent** (`Explore`/cartographer, model `haiku`) to map the impact set and return a compact blast-radius map — do not open the impact set yourself (Token Discipline). The orchestrator opens at most ~2 pivotal files. Impact set = files whose symbols/text the diff will touch; transitive dependents are listed, not opened, unless a type break is suspected. **For a gov eval/CLI/daemon/server change the impact set includes the `go/` mirror.**
+**Gate:**
+- `AFFECTED_SUBPROJECTS: [...]` enumerated.
+- Scope subagent returned every impact-set file as a `file:line` anchor (including the `go/` mirror for gov behavior changes); orchestrator opened ≤2 pivotal files.
+- Blast-radius table written with `file:line` anchors.
+- Test surface enumerated as test file paths.
+- **Coverage class determined.** State whether the impact set touches a critical-production surface (gov Go runtime, Worker value-surface fleet, the three desktop shells, `sigmashake-workspace`). If yes: load `ref/coverage.md`, record the affected package's coverage command, capture its **baseline** coverage % for the Phase 4 ≥90 assertion + Phase 5 before→after report; if it has **no** coverage command, flag it — Phase 3 must wire one. Local-only tooling: note as advisory.
+- *(gov in scope)* Phase 1 baseline snapshots taken per `ref/gov-debug.md`; `snapshot_hash` values recorded for Phase 4 diff.
+
+### 2. Interview & Architecture
+Batch all open questions into a single `AskUserQuestion`. Present design + FMEA together in the same turn. Skip worktree isolation (part of Phase 5) if diff <100 LOC or frontend-only.
+**Gate:**
+- Exactly one `AskUserQuestion` emitted, containing every open question.
+- FMEA table present with columns `Mode | Effect | Detection | Mitigation`.
+- User response received and acknowledged.
+- **Agent team named** (Prerequisite 3) by the routing precedence: each `AFFECTED_SUBPROJECT`'s lead is its `<slug>-principal-engineer` (registry) — or a standing `<prefix>-*` team that owns the surface — reused; or newly authored under `.claude/agents/<prefix>-*.md` ≤15k tokens + symlink-synced. State the exact `subagent_type` per slice. `yc-*` only as a flagged last resort; no `general-purpose` / `claude`.
+- *(store / SEO change)* the named team **must** be the standing team from the loaded ref (MACGUIDE+APPREVIEW / WINSTORE+WINCERT / SEOGUARD), and the design cites the per-check → owning-agent map; every applicable check has a named owner before Phase 3.
+
+**Example — batched Phase 2 turn:**
+```
+AskUserQuestion:
+  Q1. Should the new `--strict` flag default to on or off?
+  Q2. Failure mode on schema mismatch: warn or error?
+  Q3. Telemetry: emit to existing dashboard or new channel?
+
+FMEA:
+| Mode | Effect | Detection | Mitigation |
+|---|---|---|---|
+| Schema drift | False-pass on stale | Hash check at load | Fail closed + version pin |
+| Flag default flip | Existing CI breaks | E2E run on PR | Document + changelog entry |
+| Telemetry collide | Dashboard noise | Channel review | Namespace events `mono.*` |
+```
+
+### 3. Implement
+**Dispatch the specialized team to do the work** — disjoint slices to disjoint engineers, **serially / power-bounded** via `Workflow` or `Agent`, never general-purpose, never many concurrent builds/tests. Engineers return structured summaries; **you integrate and gate without re-reading their changed files** (Token Discipline). No suppress-error directives; no TS type-override comments.
+**Gate:**
+- `bun run <subproject>:typecheck` exits 0. Root `gov:typecheck` = `tsc` (`compile`) only, not the SPA — for `sigmashake-gov/src/client/**` run `cd sigmashake-gov && bun run typecheck:client` (or full `typecheck` = `typecheck:client && compile`); `gts`/eslint ignore `src/client/**`.
+- Zero new `@ts-ignore` / `@ts-expect-error` / `as any` in the diff.
+- Zero suppress-error directives added.
+- *(gov CLI/daemon/server/eval behavior change)* Ported into `go/`; `bun run gate go build -C go ./...` succeeds (raw ungated `go build` is DENY'd).
+- *(gov + eval-path file in impact set)* `ssg debug follow` running in background, new path verified via streaming frames — see `ref/gov-debug.md` for the eval-path file list and skip conditions.
+- *(Coverage floor armed)* Tests written **in this phase**, not deferred — the affected critical package brought to **≥90/90/90/80** (dispatch gap-closing to the `<prefix>cov-*` team). Wiring a previously-missing coverage command counts as implementation here.
+
+### 4. Test + QA
+Run `bun run test:all`, `npx gts fix`, and (if `src/server/` or `src/engine/` changed) `pnpm audit --audit-level=high` in one message — they are independent. `gts fix` runs check internally; don't run `gts check` separately. `test:all` is bounded (`TEST_JOBS` default 4) and routes through the test gate automatically — leave `TEST_JOBS` at default. Any narrower run (`bun run <x>:test`, a coverage pass) is **not** internally gated — wrap in `bun run gate:test <cmd>` or `power_bun_test_ungated` blocks it. **Capture only the pass/fail summary line into context, not the full log** (Token Discipline).
+
+Triage paths (REQUIRED before code-spelunking): gov / `go test` failure → `ref/gov-debug.md` Phase 4 triage (RCA pack first). Desktop failure/crash → `ref/desktop-debug.md` (tail the daily log + `ssg probe desktop --json` first; mac/win can't build here — honest-red).
+
+**Coverage — the ≥90% gate (if armed).** Run the affected package's coverage command **gate-wrapped + serially** per `ref/coverage.md`; assert the **whole package** meets 90/90/90/80 (Go: `make … cover` `total:` ≥90.0%). Read only the `total:` line. Below the bar → dispatch the `<prefix>cov-*` team; unreachable in scope → `BLOCKED` with named uncovered packages/percent (no fake-green).
+**Gate:**
+- `bun run test:all` reports 0 failures.
+- *(gov Go behavior changed)* `bun run gate go test -C go ./...` 0 failures.
+- `npx gts fix` produces empty diff after one run.
+- If applicable, `pnpm audit --audit-level=high` exits 0.
+- *(gov in scope)* `ssg://daemon/metrics` post-test vs Phase 1 baseline — no unexplained `error_count`/`block_count` deltas; RCA pack `id` recorded if a failure was triaged; background `ssg debug follow` terminated (`pgrep -f "ssg debug follow"` empty).
+- *(Coverage floor armed)* coverage run reports ≥90/90/90/80; a previously-missing command is now wired + passing; before→after % recorded for Phase 5 commit + final report. Unreachable → `BLOCKED`, no threshold lowering.
+
+### 5. Git Lifecycle — COMMIT **and** PUSH every run (no orphaned WIP)
+**A /mono run is NOT done until this run's work is committed AND pushed to `origin/main`.** Leaving your own changes sitting uncommitted in the working tree is a FAILED run — it is the #1 cause of WIP rot on this shared checkout. "It builds/tests" is not done; *land it*.
+1. **Inspect:** `git status` + `git diff --stat` in one message (`--stat` only — Token Discipline). Separate THIS run's files from concurrent-session WIP.
+2. **Stage explicitly** — only this run's files, by path. **Never `git add -A` / `git add .`** (it sweeps other sessions' WIP into your commit).
+3. **Commit** — one commit, co-author footer (`Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>`). Other sessions' uncommitted files stay dirty in the tree — not yours to commit, leave them.
+4. **Sync with origin (the "fix conflicts" step):** `git fetch origin`. If local diverged (`git rev-list --left-right --count origin/main...HEAD`, left>0), reconcile BEFORE pushing:
+   - A diverged-but-clean local main is the routine after-effect of prior scoped pushes, **not** a conflicted state — confirm with `git ls-files -u` (unmerged=0) + `git grep -lE '^(<{7} |>{7} )'` (no committed markers) before assuming conflicts exist.
+   - Safe conflict dry-run (writes nothing): `git merge-tree --write-tree origin/main HEAD` — exit 0 + no `CONFLICT` ⇒ the merge is clean.
+   - `git merge --no-ff origin/main` (precheck `dirty==0` && no `.git/index.lock`). Resolve any real conflicts: origin wins where it is the newer/authoritative copy; preserve genuinely-unique local work (NET `git diff --stat origin/main HEAD` per dir = the true delta).
+5. **Push (gate-wrapped):** re-`git fetch`; `bun run gate:push git push origin HEAD:refs/heads/main` (if origin advanced, re-merge onto it first). **Verify converged:** `git rev-parse HEAD` == `git rev-parse origin/main`, ahead/behind `0 0`, clean tree.
+6. **Worktree branches:** `ExitWorktree` → `git merge <branch>` → delete branch → run steps 4–5.
+
+**Concurrent-WIP escape hatch** — use ONLY when the working tree carries other sessions' uncommitted work you must not commit/clobber: build the commit in an isolated index re-parented on origin (`GIT_INDEX_FILE` tmp: `read-tree origin/main` → stage only your files → `commit-tree -p origin/main`) and push by SHA (brace the refspec: `"${C}:refs/heads/main"` — zsh eats `$C:r`). Lands your work on origin without touching the tree or local HEAD. This is the EXCEPTION; the real-commit flow (steps 2–5) is the DEFAULT so local main advances and nothing lingers uncommitted.
+
+**Gate:**
+- Staged files listed explicitly by path; no `git add -A`/`.`; zero concurrent-session files swept in.
+- Commit created with co-author footer.
+- Local divergence reconciled with origin (conflicts resolved, or proven absent via `merge-tree`).
+- Push succeeded **and verified** converged: `HEAD == origin/main` (don't assume — `git rev-parse` both).
+- *(pre-push `release-check` fails on pre-existing, unrelated drift NOT in your diff — e.g. gov `server-typecheck` ratchet or desktop version-train; note release-check runs only when the push touches `sigmashake-gov/`/`sigmashake-fleet/`)* prove your diff didn't cause it (`git diff --name-only origin/main HEAD -- <the failing area>`), then bypass with `bun run gate:push git push --no-verify …` (the `SSG_SKIP_PREPUSH`/`SSG_SKIP_RELEASE_CHECK` env is **stripped by the powergate slice**, so `--no-verify` is the reliable skip through the gate). Never bypass a failure your change caused.
+
+### 6. Post-ship *(conditional on diff content — run only triggers whose paths changed)*
+- **Gov Rules** (`.rules` changed): `ssg lint && ssg dedupe`. Max 2 new rules per change. **Keep regexes flat:** a quantifier over an alternation group (`((a|b)*)`, `(a|b)+`) compiles to match-EVERYTHING in the Go nfaregex engine and `ssg lint` does **not** catch it — one such DENY rule blocks every tool call. Use bare `(a|b)`. After editing rules the operator syncs the DB via `ssg rule sync` (overwrite) in an ungoverned terminal; `ssg init` seed is insert-if-absent and won't fix a bad existing row.
+- **Skills** (`skills/` changed): ensure the symlink in `.claude/skills/` resolves.
+- **Scripts** (`package.json` changed): reconcile root and subproject scripts.
+- **Docs** (CLI commands changed): sync `docs/*.md` and `gov/README.md`. Run `bun run build` in docs.
+- **Readiness attestation** (critical-production feature shipped, floor armed + passed): follow the attestation steps in `ref/coverage.md` (`production-readiness.json` `met` with the real number, regenerate the workspace snapshot). No `met` without the real number.
+- **Pricing / Access surfaces** (paywall, entitlement, license, download gate, metering, eval-auth, playground changed): verify **no free leak to a value surface** — gates default on, fail closed, no anonymous path to rule bodies / eval API / dashboard / metering / fleet. The download/install on-ramp stays open; open distribution channels stay DISCONTINUED.
+- **Store conformance** (Apple/MS store surface changed): run the Phase 6 trigger in `ref/store-conformance.md` (live-bar diff + owner-map coverage-completeness gate). Unowned applicable check → `BLOCKED`. No "approved/certified" claim.
+- **Search Console / SEO** (sigmashake.com SEO surface changed): run the Phase 6 trigger in `ref/seo-conformance.md` (catalog-integrity + owner-map gate; hard test at 90/90/90/80). Unowned applicable issue → `BLOCKED`. No fabricated ratings / "Google-approved".
+
+**Hook audit — run after every pipeline, unconditionally:**
+```bash
+ssg debug snapshot ssg://audit/recent?limit=50
+```
+Scan for `DENY`/`ASK` decisions that blocked commands this pipeline legitimately ran. For each false positive: `Edit` the offending `.rules` (`.sigmashake/rules/` or `sigmashake-gov/.sigmashake/rules/`) → `ssg lint .sigmashake/rules/` (0 errors) → stage + commit `fix(rules): <rule-id> false positive — <one-line>`. Zero false positives → record "no hook false positives".
+**Gate:**
+- Each applicable trigger ran and committed any changes.
+- Inapplicable triggers explicitly skipped in the report.
+- Hook audit run; false positives fixed and committed, or "none" noted.
+
+### 7. Deploy *(only if asked)*
+`bun run <subproject>:deploy`. Worker deploys are pass-through by default (`SSG_DEPLOY_STRICT=1` re-gates). For `gov`: `pnpm add -g @sigmashake/ssg` + `gh release create`. For desktop: `bun run release:desktop:{linux,mac,win}` (host-OS only) — a native build is an all-core compile, so run it **gate-wrapped** and never concurrently with another session's build. Verify with a live probe (`curl` / `ssg probe`), not just exit 0 — `bun --cwd` can silently no-op under the powergate.
+**Gate:**
+- Deploy command exited 0 **and** verified live (curl/probe).
+- For `gov`: GitHub release URL recorded in the final report.
+
+## Reporting
+**Final Report**: Requirement | Agent team (the `subagent_type` per `AFFECTED_SUBPROJECT` — `<slug>-principal-engineer` / standing `<prefix>-*` team / newly-authored; flag any `yc-*` last-resort fallback + the missing specialist) | Files changed (TS + `go/` mirror) | Tests (`test:all` + `go test`) | Coverage (armed? · surface · before→after % · 90/90/90/80 met) | QA | Commits | Rules/Skills updated | RCA pack ids (if any) | Daemon metrics delta vs Phase 1 baseline (if gov touched). Emitting this report with every gate green satisfies the Prerequisite-2 goal, auto-clearing the Stop hook — do not instruct the user to clear it.
+
+## Anti-Loop
+- 3× identical output → STOP and report `STUCK`.
+- Max 5 retries per phase, then `ROLLBACK` and report `BLOCKED`.
+- `npx gts fix` max 2 consecutive runs; if issues remain, report and stop.
+- **Debugger-first recovery (gov):** stuck in Phase 3/4 on a gov change → `ssg debug rca --markdown` BEFORE the 3rd retry (see `ref/gov-debug.md`). Looping past it = `STUCK`.
+- **Pattern analysis before 3rd retry (gov + desktop):** run `ssg debug analyze-sessions --last=24h`; if `retry-loop`/`blind-build`/`state-speculation` is flagged for this session, act on it before retrying. Skipping = `STUCK`.
+- **Coverage gate is fail-closed, never fake-green.** Can't reach ≥90/90/90/80 in scope → `BLOCKED` with exact uncovered packages/percent — do not lower the threshold, exempt the package, mark local-only to dodge it, or write `met` without the real number.
