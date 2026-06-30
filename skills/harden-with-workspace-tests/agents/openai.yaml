@@ -1,0 +1,4 @@
+interface:
+  display_name: "Workspace Resilience Tests"
+  short_description: "Map changes to Sigma Shake test kinds"
+  default_prompt: "Use $harden-with-workspace-tests to harden this app by mapping its risks to the Sigma Shake workspace test taxonomy."
