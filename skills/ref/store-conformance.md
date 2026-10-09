@@ -1,0 +1,21 @@
+# ref: Apple + Microsoft Store Conformance — load when a `sigmashake-desktop-{mac,windows}` store/guideline/listing/entitlement/MSIX/MAS surface ∈ AFFECTED_SUBPROJECTS, or the task is conformance to the Apple App Store Review Guidelines / Microsoft Store Policies
+
+**Only the four standing specialized review and engineering teams do store-guideline conformance work for the two store-listed desktop shells. Never use a general-purpose agent.** Every applicable Apple guideline (macOS) and Microsoft policy (Windows) maps to a **named owning agent**. The orchestrator dispatches the correct team. The orchestrator does not advance while any applicable check has no owner.
+
+| Lane | Engineering team (writes code / attests) — root `.claude/agents/` | Adversarial pre-submission review board |
+|---|---|---|
+| **Apple / macOS** | **MACGUIDE** — `macguide-lead`, `-guidelines-cartographer`, `-mas-conformance-engineer` (§2.x Performance), `-design-ux-engineer` (§4.x Design + 2.3 metadata), `-privacy-business-engineer` (§5.1 Privacy + §3.x Business), `-safety-legal-engineer` (§1 Safety + §5.2 IP + §5.6 Conduct + UGC), `-parity-engineer`, `-honesty-sentinel`, `-verification-analyst` | **APPREVIEW** (`sigmashake-desktop-mac/.claude/agents/appreview-*`) — lead + guideline-cartographer + adversarial / architecture / security reviewers + verification-analyst |
+| **Microsoft / Windows** | **WINSTORE** — `winstore-lead`, `-policy-cartographer`, `-shell-conformance-engineer`, `-listing-privacy-engineer`, `-parity-attest-engineer`, `-usability-notifications-engineer` (MS 10.4/10.7/10.12 where live-applicable; honest `n/a`+evidence where not), `-honesty-sentinel`, `-verification-analyst` | **WINCERT** — `wincert-lead`, `-policy-cartographer`, adversarial / architecture / packaging / security reviewers, `-verification-analyst` |
+
+**Source-of-truth ledgers (the canonical "every check accounted for"):**
+- macOS — `sigmashake-desktop-mac/docs/store/apple-guidelines-ledger.md`. It lists every Apple section (1.1 → *After You Submit*) with its applicability and mapped `store-*` check. It also has the **`## Owning-agent map`**.
+- Windows — `sigmashake-desktop-windows/docs/ops/windows-store-guidelines-roadmap.md` and `docs/compliance/apple-guidelines-parity.json` (87-item matrix). It also has the **`## Owning-agent map`**.
+- Check registry — the `store-*` entries in `sigmashake-workspace/src/platform-parity-catalog.ts`. It has 3 mirrors: TS catalog · gov TS handler · shipped Go `handlers_workspace_platform_parity.go`. The Go daemon attest route attests the entries into `~/.sigmashake/platform-parity.json`.
+
+**Freshness rule.** Each round, the cartographers re-fetch the **live** Apple guidelines and MS Store Policies. They also cross-check the macOS Apple enumeration against the community **safaiyeh `app-store-review-skill` (macOS extract only)**. If a section is added, changed, or removed, the team must re-verdict the mapped cluster **and** update the owner map before the round ends.
+
+**Phase 2 gate add-on:** the named team **must** be the store teams. Use MACGUIDE + APPREVIEW (Apple/macOS) and/or WINSTORE + WINCERT (Microsoft/Windows) for each OS in scope. The design **cites the per-check → owning-agent owner-map**. Before Phase 3, every applicable Apple section and MS policy must have a named owner (or an honest `n/a`+reason).
+
+**Phase 6 trigger:** the OS cartographer (`macguide-guidelines-cartographer` / `winstore-policy-cartographer`) re-runs the live-bar diff and the safaiyeh macOS cross-check. Then the **coverage-completeness gate** asserts that every *applicable* Apple section and MS policy maps to a **named owning agent** in the ledger `## Owning-agent map`. An honest `n/a — <reason>` is allowed. **An empty owner is a fail.** If an applicable check has no owner, the result is **`BLOCKED`** (Anti-Loop). Never report a fake-green "covered".
+
+**Honesty (no-overclaim).** Do not write "Apple-approved", "Microsoft-certified", "Store-approved", "fully compliant", or "tamper-proof" in any agent, ledger, or listing copy. Do not list a legal entity on any listing. Never claim incorporation. The mac and win shells are **host-only**. Store-conformance legs that need a real device, App Store Connect, or Partner Center stay **honest-red** (operator-attested). Never fake-green them.
